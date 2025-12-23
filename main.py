@@ -52,6 +52,25 @@ class MeetingResponse(BaseModel):
     topic: str
 
 
+class SchedulerBookingRequest(BaseModel):
+    """Request model for Zoom Scheduler booking with email trigger"""
+    schedule_id: str  # Zoom Scheduler schedule ID
+    start_time: str  # ISO 8601 format: "2025-02-01T10:00:00Z"
+    user_email: EmailStr  # User's email address
+    first_name: str  # User's first name
+    last_name: str  # User's last name
+
+
+class SchedulerBookingResponse(BaseModel):
+    """Response model for Zoom Scheduler booking"""
+    booking_id: str
+    email_sent: bool
+    meeting_link: str
+    scheduled_time: str
+    status: str
+    invitee_email: str
+
+
 # ==================== Zoom OAuth Logic ====================
 
 def get_zoom_access_token() -> str:
@@ -174,6 +193,79 @@ def create_zoom_meeting(
         )
 
 
+def create_scheduler_booking(
+    access_token: str,
+    schedule_id: str,
+    start_time: str,
+    user_email: str,
+    first_name: str,
+    last_name: str
+) -> dict:
+    """
+    Create a booking in Zoom Scheduler which triggers email notification.
+    
+    This function calls the Zoom Scheduler API endpoint to create a booking.
+    When the booking is created, Zoom automatically:
+    - Creates the meeting
+    - Generates the join link
+    - Sends confirmation email to the invitee with calendar invite
+    
+    Args:
+        access_token: Zoom OAuth access token
+        schedule_id: Zoom Scheduler schedule ID
+        start_time: Meeting start time (ISO 8601 format: "2025-02-01T10:00:00Z")
+        user_email: Invitee's email address
+        first_name: Invitee's first name
+        last_name: Invitee's last name
+        
+    Returns:
+        dict: Booking details including booking_id, meeting_link, and status
+        
+    Raises:
+        HTTPException: If booking creation fails
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    
+    # Construct the payload according to Zoom Scheduler API specification
+    booking_payload = {
+        "start_time": start_time,
+        "invitee": {
+            "email": user_email,
+            "first_name": first_name,
+            "last_name": last_name
+        }
+    }
+    
+    try:
+        response = httpx.post(
+            f"{ZOOM_API_BASE_URL}/scheduler/schedules/{schedule_id}/bookings",
+            headers=headers,
+            json=booking_payload,
+            timeout=10.0
+        )
+        response.raise_for_status()
+        
+        booking_data = response.json()
+        
+        return {
+            "booking_id": booking_data.get("id"),
+            "email_sent": True,  # Zoom sends email automatically when booking is created
+            "meeting_link": booking_data.get("join_url", ""),
+            "scheduled_time": booking_data.get("start_time"),
+            "status": booking_data.get("status", "created"),
+            "invitee_email": user_email
+        }
+    
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create Zoom Scheduler booking: {str(e)}"
+        )
+
+
 # ==================== API Endpoints ====================
 
 @app.get("/", tags=["Health"])
@@ -238,6 +330,76 @@ async def create_meeting(request: CreateMeetingRequest) -> MeetingResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unexpected error: {str(e)}"
+        )
+
+
+@app.post(
+    "/api/zoom/scheduler/book",
+    response_model=SchedulerBookingResponse,
+    tags=["Zoom Scheduler"],
+    summary="Book a Zoom Scheduler Meeting (Triggers Email)"
+)
+async def book_scheduler_meeting(request: SchedulerBookingRequest) -> SchedulerBookingResponse:
+    """
+    Create a booking in Zoom Scheduler and trigger email notification.
+    
+    🔥 This endpoint triggers automatic email sending:
+    - When booking is created, Zoom internally creates the meeting
+    - Zoom generates the join link automatically
+    - 📧 Zoom sends confirmation email to invitee automatically
+    - 📅 Calendar invite is attached to the email
+    
+    This is ideal for integrating with Google AI Studio where users enter their email addresses.
+    
+    Endpoint Flow:
+    1. User submits email via Google AI Studio
+    2. Backend calls this endpoint with user's email details
+    3. Zoom creates booking and sends email automatically
+    
+    Args:
+        request: SchedulerBookingRequest containing:
+            - schedule_id: Zoom Scheduler schedule ID
+            - start_time: Meeting start time (ISO 8601: "2025-02-01T10:00:00Z")
+            - user_email: User's email address
+            - first_name: User's first name
+            - last_name: User's last name
+        
+    Returns:
+        SchedulerBookingResponse: Booking confirmation with email status
+        
+    Raises:
+        HTTPException: If Zoom authentication or booking creation fails
+    """
+    try:
+        # Step 1: Get Zoom access token
+        access_token = get_zoom_access_token()
+        
+        # Step 2: Create booking via Zoom Scheduler API (triggers email)
+        booking_details = create_scheduler_booking(
+            access_token=access_token,
+            schedule_id=request.schedule_id,
+            start_time=request.start_time,
+            user_email=request.user_email,
+            first_name=request.first_name,
+            last_name=request.last_name
+        )
+        
+        # Step 3: Return confirmation response
+        return SchedulerBookingResponse(
+            booking_id=booking_details["booking_id"],
+            email_sent=booking_details["email_sent"],
+            meeting_link=booking_details["meeting_link"],
+            scheduled_time=booking_details["scheduled_time"],
+            status=booking_details["status"],
+            invitee_email=booking_details["invitee_email"]
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error creating Scheduler booking: {str(e)}"
         )
 
 
