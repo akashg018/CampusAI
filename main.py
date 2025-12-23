@@ -7,7 +7,7 @@ from dateutil import parser
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, field_validator
 import httpx
 from dotenv import load_dotenv
 
@@ -39,10 +39,34 @@ ZOOM_API_BASE_URL = "https://api.zoom.us/v2"
 
 class CreateMeetingRequest(BaseModel):
     candidate_name: str
-    user_email: EmailStr
+    user_email: str  # Changed from EmailStr for more flexibility
     start_time: str  # Can be ISO 8601 or 12-hour format: "02:30 PM" or "2025-02-01T14:30:00Z"
     duration: int  # Duration in minutes
     schedule_id: Optional[str] = None  # Optional Zoom Scheduler schedule ID for email trigger
+    
+    @field_validator('user_email')
+    @classmethod
+    def validate_email(cls, v):
+        """Validate email format - basic check"""
+        if not v or '@' not in v:
+            raise ValueError('Invalid email format: must contain @')
+        return v.strip().lower()
+    
+    @field_validator('candidate_name')
+    @classmethod
+    def validate_candidate_name(cls, v):
+        """Validate candidate name is not empty"""
+        if not v or not v.strip():
+            raise ValueError('Candidate name cannot be empty')
+        return v.strip()
+    
+    @field_validator('duration')
+    @classmethod
+    def validate_duration(cls, v):
+        """Validate duration is positive"""
+        if v <= 0:
+            raise ValueError('Duration must be greater than 0')
+        return v
 
 
 class MeetingResponse(BaseModel):
@@ -58,9 +82,17 @@ class SchedulerBookingRequest(BaseModel):
     """Request model for Zoom Scheduler booking with email trigger"""
     schedule_id: str  # Zoom Scheduler schedule ID
     start_time: str  # ISO 8601 format: "2025-02-01T10:00:00Z"
-    user_email: EmailStr  # User's email address
+    user_email: str  # Changed from EmailStr for more flexibility
     first_name: str  # User's first name
     last_name: str  # User's last name
+    
+    @field_validator('user_email')
+    @classmethod
+    def validate_email(cls, v):
+        """Validate email format - basic check"""
+        if not v or '@' not in v:
+            raise ValueError('Invalid email format: must contain @')
+        return v.strip().lower()
 
 
 class SchedulerBookingResponse(BaseModel):
