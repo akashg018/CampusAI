@@ -368,6 +368,18 @@ def create_scheduler_booking(
             "invitee_email": user_email
         }
     
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Schedule ID not found: '{schedule_id}'. Please verify your Zoom Scheduler schedule ID. "
+                       f"Check https://zoom.us/scheduler or use /api/zoom/scheduler/validate endpoint."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create Zoom Scheduler booking: {e.response.status_code} - {e.response.text}"
+            )
     except httpx.HTTPError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -476,10 +488,15 @@ async def create_meeting(request: CreateMeetingRequest) -> CombinedMeetingRespon
                 workflow_status = "meeting_with_email"
                 
             except HTTPException as e:
-                # Log scheduler booking failure but don't fail the entire request
-                print(f"⚠️  Scheduler booking failed: {e.detail}")
-                # Return meeting but note that email wasn't sent
-                workflow_status = "meeting_created_booking_failed"
+                # If 404, provide helpful guidance
+                if e.status_code == 404:
+                    print(f"⚠️  Invalid Schedule ID: {request.schedule_id}")
+                    # Return meeting with warning but don't fail
+                    workflow_status = "meeting_created_invalid_schedule_id"
+                else:
+                    # Log other errors but don't fail the entire request
+                    print(f"⚠️  Scheduler booking failed: {e.detail}")
+                    workflow_status = "meeting_created_booking_failed"
             except Exception as e:
                 print(f"⚠️  Unexpected error during scheduler booking: {str(e)}")
                 workflow_status = "meeting_created_booking_failed"
@@ -585,6 +602,62 @@ def zoom_status():
         "credentials_configured": credentials_configured,
         "cors_enabled": "All origins (Google AI Studio compatible)"
     }
+
+
+@app.post("/api/zoom/scheduler/validate", tags=["Zoom Scheduler"])
+async def validate_schedule_id(schedule_id: str) -> dict:
+    """
+    Validate if a Zoom Schedule ID exists and is accessible.
+    
+    Use this to verify your schedule_id before sending emails.
+    
+    Args:
+        schedule_id: The Zoom Scheduler schedule ID to validate
+        
+    Returns:
+        dict: Validation result with schedule details
+    """
+    try:
+        access_token = get_zoom_access_token()
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = httpx.get(
+            f"{ZOOM_API_BASE_URL}/scheduler/schedules/{schedule_id}",
+            headers=headers,
+            timeout=10.0
+        )
+        
+        if response.status_code == 404:
+            return {
+                "valid": False,
+                "schedule_id": schedule_id,
+                "error": f"Schedule ID '{schedule_id}' not found. Please verify the ID.",
+                "help": "Get your Schedule ID from: https://zoom.us/scheduler"
+            }
+        
+        response.raise_for_status()
+        
+        schedule_data = response.json()
+        
+        return {
+            "valid": True,
+            "schedule_id": schedule_id,
+            "name": schedule_data.get("name", "Unknown"),
+            "timezone": schedule_data.get("timezone", "Unknown"),
+            "status": "ready_for_booking"
+        }
+    
+    except Exception as e:
+        return {
+            "valid": False,
+            "schedule_id": schedule_id,
+            "error": str(e),
+            "help": "Verify your Zoom credentials in .env file and schedule_id from https://zoom.us/scheduler"
+        }
 
 
 if __name__ == "__main__":
